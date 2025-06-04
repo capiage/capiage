@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Visualisation Avancée: Radio-isotopes (Three.js)</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050510; color: white; font-family: 'Roboto', sans-serif; }
+        canvas { display: block; }
+        .hud-panel { /* Common style for HUD elements */
+            position: absolute;
+            padding: 15px;
+            background-color: rgba(10, 20, 40, 0.85);
+            border: 1px solid rgba(100, 150, 255, 0.5);
+            border-radius: 8px;
+            font-size: 0.9em;
+            max-width: 350px;
+            box-shadow: 0 0 15px rgba(100, 150, 255, 0.3);
+            pointer-events: none; 
+            z-index: 10;
+        }
+        #mainInfoPanel { top: 20px; left: 20px; }
+        /* Adjusted currentSectionPanel to top right */
+        #currentSectionPanel { 
+            top: 20px; 
+            right: 20px; 
+            text-align: right; 
+            bottom: auto; /* Override previous bottom */
+        } 
+        h3 { margin-top: 0; color: #87CEFA; } 
+
+        .interactive-button { 
+            background-color: #2a3a5a; border: 1px solid #6495ED; color: white;
+            padding: 8px 12px; text-align: center; text-decoration: none;
+            display: inline-block; font-size: 12px; margin: 0; /* Margin handled by flex gap */
+            cursor: pointer; border-radius: 4px; pointer-events: auto; 
+        }
+        .interactive-button:hover { background-color: #3f568a; }
+
+        /* Hotbar style for sceneSpecificControls */
+        #sceneSpecificControls {
+            position: absolute;
+            bottom: 20px; /* Position at the bottom */
+            left: 50%;
+            transform: translateX(-50%); /* Center horizontally */
+            display: flex; /* Arrange buttons in a row */
+            flex-direction: row;
+            gap: 10px; /* Space between buttons */
+            padding: 10px;
+            background-color: rgba(20, 30, 50, 0.9); /* Slightly different background */
+            border: 1px solid rgba(100, 150, 255, 0.6);
+            border-radius: 8px;
+            box-shadow: 0 -2px 10px rgba(100, 150, 255, 0.2); /* Shadow for depth */
+            pointer-events: auto; /* Enable pointer events for the container */
+            z-index: 1000; /* Ensure it's on top */
+            max-width: 90%; /* Prevent it from being too wide */
+            overflow-x: auto; /* Allow scrolling if too many buttons */
+        }
+        #sceneSpecificControls > button { 
+            pointer-events: auto; /* Buttons are interactive */
+            flex-shrink: 0; /* Prevent buttons from shrinking if space is tight */
+        }
+
+
+        /* VR Button Styling */
+        #VRButton {
+            position: absolute;
+            bottom: 20px; /* Could be an issue if hotbar also has many items */
+            /* Let's move VR button to bottom right if hotbar is center */
+            right: 20px; 
+            left: auto; /* Override previous left: 50% */
+            transform: none; /* Override previous transform */
+            padding: 10px 15px;
+            background-color: #2a3a5a;
+            border: 1px solid #6495ED;
+            color: white;
+            font-family: 'Roboto', sans-serif;
+            font-size: 0.9em;
+            border-radius: 4px;
+            cursor: pointer;
+            z-index: 1001; /* Above hotbar if they overlap */
+            box-shadow: 0 0 15px rgba(100, 150, 255, 0.3);
+        }
+        #VRButton:hover { background-color: #3f568a; }
+        #VRButton:active { background-color: #1e2a4a; }
+
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="mainInfoPanel" class="hud-panel">
+        <h3>Projet: Radio-isotopes en Médecine</h3>
+        Utilisez la souris pour naviguer (Orbiter/Zoomer).<br>
+        <b>Note:</b> Ces visualisations conceptuelles illustrent les principes.
+    </div>
+    <div id="currentSectionPanel" class="hud-panel">
+        Section Actuelle: N/A
+    </div>
+    <div id="sceneSpecificControls"></div>
+    <!-- VR Button will be appended here by script -->
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.150.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.150.0/examples/jsm/",
+                "gsap": "https://unpkg.com/gsap@3.12.2/index.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { VRButton } from 'three/addons/webxr/VRButton.js';
+        import { gsap } from 'gsap';
+
+        let scene, camera, renderer, controls, clock, composer;
+        let mainInfoPanel, currentSectionPanel, sceneSpecificControlsDiv;
+        
+        let worldGroup; 
+        let vrButton;
+        let pcModeActive = true;
+        const initialCameraPosition = new THREE.Vector3();
+        const initialControlsTarget = new THREE.Vector3();
+        const vrPlayerHeight = 1.6; 
+
+        const gltfLoader = new GLTFLoader();
+        const textureLoader = new THREE.TextureLoader();
+
+        const SECTION_FOCUS_DISTANCE = 18; // Adjusted for closer sections
+        let activeSectionName = "N/A";
+        let activeSectionObject = null;
+
+        const simpleGlowVertexShader = `
+            varying vec3 vNormal;
+            void main() {
+                vNormal = normalize( normalMatrix * normal );
+                gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+            }
+        `;
+        const simpleGlowFragmentShader = `
+            varying vec3 vNormal;
+            uniform vec3 glowColor;
+            uniform float intensity;
+            void main() {
+                float H = dot(vNormal, vec3(0,0,1)); 
+                float power = 1.5 - abs(H);
+                gl_FragColor = vec4( glowColor * intensity * pow(power, 3.0) , intensity * pow(power,5.0));
+            }
+        `;
+
+        async function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050510);
+            scene.fog = new THREE.FogExp2(0x050510, 0.025); // Slightly increased fog for closer scene
+
+            worldGroup = new THREE.Group();
+            scene.add(worldGroup);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000); // Reduced far plane
+            camera.position.set(0, 8, 25); // Adjusted for closer scene
+            initialCameraPosition.copy(camera.position);
+
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.outputEncoding = THREE.sRGBEncoding; 
+            renderer.xr.enabled = true; 
+            document.body.appendChild(renderer.domElement);
+            
+            vrButton = VRButton.createButton(renderer);
+            document.body.appendChild(vrButton);
+
+
+            clock = new THREE.Clock();
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.minDistance = 1;
+            controls.maxDistance = 70; // Adjusted for closer scene
+            controls.target.set(0, 2, 0); // Adjusted for lower camera
+            initialControlsTarget.copy(controls.target);
+
+
+            mainInfoPanel = document.getElementById('mainInfoPanel');
+            currentSectionPanel = document.getElementById('currentSectionPanel');
+            sceneSpecificControlsDiv = document.getElementById('sceneSpecificControls');
+
+
+            setupLighting();
+            createEnvironment(); 
+
+            await loadVisualSections(); 
+
+            const renderPass = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.0, 0.4, 0.85); // Slightly adjusted bloom
+            bloomPass.threshold = 0.04; 
+            bloomPass.strength = 0.6;   
+            bloomPass.radius = 0.35;
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderPass);
+            composer.addPass(bloomPass);
+
+            renderer.xr.addEventListener('sessionstart', () => {
+                pcModeActive = false;
+                controls.enabled = false;
+                mainInfoPanel.style.display = 'none';
+                currentSectionPanel.style.display = 'none';
+                sceneSpecificControlsDiv.style.display = 'none';
+                vrButton.style.display = 'none'; 
+
+                const hmdOffset = new THREE.Vector3();
+                renderer.xr.getCamera(camera).getWorldPosition(hmdOffset); // Get current HMD world position
+                
+                // Place the worldGroup origin relative to the player's HMD
+                // We want the 'initialControlsTarget' of the PC view to be in front of the HMD
+                // And the player to feel like they are at 'initialCameraPosition' relative to that target
+                const pcCamToTargetVec = new THREE.Vector3().subVectors(initialControlsTarget, initialCameraPosition);
+                
+                // Target position for worldGroup: HMD_pos - initialControlsTarget + (initialPlayerHeightOffset)
+                worldGroup.position.copy(hmdOffset); // Start at HMD position
+                worldGroup.position.sub(initialControlsTarget); // Move world so its 'initialControlsTarget' point is at HMD origin
+                worldGroup.position.y += vrPlayerHeight; // Adjust for player height (local floor)
+                
+                // Then, shift the world "back" so the HMD is effectively at the PC camera's viewing distance from the target
+                const desiredHmdPositionInWorldGroupSpace = new THREE.Vector3().subVectors(initialCameraPosition, initialControlsTarget);
+                const worldOffset = new THREE.Vector3().copy(desiredHmdPositionInWorldGroupSpace).negate();
+                
+                // Simplified approach:
+                // Place worldGroup such that its (0,0,0) point aligns with where the PC target was,
+                // but adjusted for player height and then moved back so player is at PC camera distance.
+                worldGroup.position.set(0,0,0); // Reset
+                worldGroup.position.sub(initialControlsTarget); // Center initial target at HMD origin
+                worldGroup.position.y += vrPlayerHeight; // Account for player height
+                worldGroup.position.add(initialCameraPosition); // Effectively moves the world so HMD is where PC camera was relative to target
+                                
+            });
+
+            renderer.xr.addEventListener('sessionend', () => {
+                pcModeActive = true;
+                camera.position.copy(initialCameraPosition); 
+                controls.target.copy(initialControlsTarget);
+                controls.enabled = true;
+                controls.update(); 
+                
+                mainInfoPanel.style.display = 'block';
+                currentSectionPanel.style.display = 'block';
+                sceneSpecificControlsDiv.style.display = 'block'; 
+                vrButton.style.display = 'block'; 
+
+                worldGroup.position.set(0, 0, 0); 
+            });
+
+            window.addEventListener('resize', onWindowResize);
+            renderer.setAnimationLoop(animate);
+        }
+
+        function setupLighting() {
+            scene.add(new THREE.AmbientLight(0x708090, 0.7)); 
+
+            const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.0); 
+            dirLight1.position.set(15, 20, 15); // Adjusted light positions for closer scene
+            dirLight1.castShadow = true;
+            dirLight1.shadow.mapSize.width = 2048; dirLight1.shadow.mapSize.height = 2048;
+            dirLight1.shadow.camera.near = 0.5; dirLight1.shadow.camera.far = 70; // Adjusted frustum
+            dirLight1.shadow.bias = -0.001; 
+            scene.add(dirLight1);
+
+            const dirLight2 = new THREE.DirectionalLight(0x80a0ff, 0.5); 
+            dirLight2.position.set(-15, 18, -18);
+            scene.add(dirLight2);
+
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x446688, 0.5);
+            hemiLight.position.set(0, 30, 0); // Adjusted height
+            scene.add(hemiLight);
+        }
+
+        function createEnvironment() {
+            const groundGeo = new THREE.PlaneGeometry(150, 150); // Smaller ground
+            const groundMat = new THREE.MeshStandardMaterial({ color: 0x080c18, roughness: 0.95, metalness: 0.05 });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            worldGroup.add(ground); 
+
+            const starVertices = [];
+            for (let i = 0; i < 10000; i++) { // Fewer stars, closer range
+                const x = THREE.MathUtils.randFloatSpread(1000); // Reduced spread
+                const y = THREE.MathUtils.randFloatSpread(1000);
+                const z = THREE.MathUtils.randFloatSpread(1000);
+                if(new THREE.Vector3(x,y,z).length() > 200 && new THREE.Vector3(x,y,z).length() < 800 ) starVertices.push(x, y, z);
+            }
+            const starGeo = new THREE.BufferGeometry();
+            starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+            const starMat = new THREE.PointsMaterial({ color: 0xbbccff, size: 0.7, transparent:true, opacity:0.5, fog:false, blending: THREE.AdditiveBlending }); 
+            const starField = new THREE.Points(starGeo, starMat);
+            worldGroup.add(starField); 
+        }
+
+
+        class VisualSection extends THREE.Group {
+            constructor(name, position, data = {}) {
+                super();
+                this.name = name;
+                this.position.copy(position);
+                this.data = data; 
+                this.animationUpdate = null; 
+                this.uiControls = [];
+
+                const labelSprite = createTextSprite(name, {fontsize:28, fontface: "Roboto", textColor: {r:173, g:216, b:230, a:1.0}});
+                labelSprite.position.set(0, (data.labelHeightOffset !== undefined) ? data.labelHeightOffset : 4, 0); // Adjusted default height
+                labelSprite.scale.multiplyScalar(1.2); // Slightly smaller labels as scene is closer
+                this.add(labelSprite);
+
+                if(data.onFocusGain) this.onFocusGain = data.onFocusGain; else this.onFocusGain = this._defaultFocusGain;
+                if(data.onFocusLoss) this.onFocusLoss = data.onFocusLoss; else this.onFocusLoss = this._defaultFocusLoss;
+            }
+
+            setAnimation(fn) { this.animationUpdate = fn; }
+            update(delta, time) { if (this.animationUpdate) { this.animationUpdate(delta, time, this); } }
+
+            addUIControl(text, callback) {
+                const button = document.createElement('button');
+                button.classList.add('interactive-button');
+                button.innerText = text;
+                button.onclick = callback;
+                this.uiControls.push(button);
+            }
+            
+            _defaultFocusGain() {
+                if (pcModeActive) { 
+                    sceneSpecificControlsDiv.innerHTML = ''; 
+                    this.uiControls.forEach(btn => sceneSpecificControlsDiv.appendChild(btn));
+                    sceneSpecificControlsDiv.style.opacity = "1";
+                    sceneSpecificControlsDiv.style.visibility = "visible";
+                }
+                gsap.to(this.children.find(c => c instanceof THREE.Sprite).material, {opacity: 1, duration: 0.3});
+            }
+            _defaultFocusLoss() {
+                 if (pcModeActive) {
+                    sceneSpecificControlsDiv.innerHTML = '';
+                    sceneSpecificControlsDiv.style.opacity = "0";
+                    sceneSpecificControlsDiv.style.visibility = "hidden";
+                 }
+                gsap.to(this.children.find(c => c instanceof THREE.Sprite).material, {opacity: 0.3, duration: 0.3});
+            }
+        }
+
+        async function loadVisualSections() {
+            // Adjusted positions to be closer to origin (0,0,0) and to each other
+            const sectionsData = [
+                { name: "Introduction: Atomes & Radioactivité", pos: new THREE.Vector3(-12, 0, -5), initFunc: initIntroSection, data: { labelHeightOffset: 3.5 } },
+                { name: "Production des Radio-isotopes", pos: new THREE.Vector3(0, 0, -15), initFunc: initProductionSection, data: { labelHeightOffset: 4 } },
+                { name: "Applications Diagnostiques", pos: new THREE.Vector3(12, 0, -5), initFunc: initDiagnosticAppsSection, data: { labelHeightOffset: 4 } },
+                { name: "Applications Thérapeutiques & Stérilisation", pos: new THREE.Vector3(15,0,10), initFunc: initTherapeuticAppsSection, data: {labelHeightOffset: 3.5}},
+                { name: "Impacts & Gestion", pos: new THREE.Vector3(-15,0,10), initFunc: initImpactsSection, data: {labelHeightOffset:2.5}},
+                { name: "Bilan & Défis", pos: new THREE.Vector3(0,0,18), initFunc: initBilanSection, data: {labelHeightOffset:2.5}}
+            ];
+
+            for (const data of sectionsData) {
+                const section = new VisualSection(data.name, data.pos, data.data);
+                worldGroup.add(section); 
+                if (data.initFunc) {
+                    await data.initFunc(section); 
+                }
+                const labelSprite = section.children.find(c => c instanceof THREE.Sprite);
+                if(labelSprite) labelSprite.material.opacity = 0.3;
+            }
+            // Initially hide hotbar
+            if (pcModeActive) {
+                sceneSpecificControlsDiv.style.opacity = "0";
+                sceneSpecificControlsDiv.style.visibility = "hidden";
+            }
+        }
+        
+        async function initIntroSection(sectionGroup) {
+            const protonMat = new THREE.MeshStandardMaterial({color: 0xff6666, roughness: 0.4, metalness: 0.1, emissive: 0x440000, name: "protonMat"});
+            const neutronMat = new THREE.MeshStandardMaterial({color: 0x8888cc, roughness: 0.6, metalness: 0.1, name: "neutronMat"});
+            const electronMat = new THREE.MeshStandardMaterial({color: 0xffff99, roughness: 0.2, emissive:0xaaaa00, metalness:0.1, name: "electronMat"});
+            const orbitalShaderMat = (color, intensity = 0.2) => new THREE.ShaderMaterial({
+                uniforms: { glowColor: { value: new THREE.Color(color) }, intensity: {value: intensity} },
+                vertexShader: simpleGlowVertexShader, fragmentShader: simpleGlowFragmentShader,
+                blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, side: THREE.BackSide
+            });
+
+            const stableAtom = new THREE.Group();
+            stableAtom.position.set(-4, 2.5, 0);
+            sectionGroup.add(stableAtom);
+            addSectionTitle(stableAtom, "Hélium-4 (Stable)", new THREE.Vector3(0,2.5,0));
+
+
+            const heNucleus = new THREE.Group();
+            stableAtom.add(heNucleus);
+            const pSize = 0.2; const nSize = 0.21; 
+            heNucleus.add(new THREE.Mesh(new THREE.SphereGeometry(pSize, 12, 8), protonMat).position.set(0.1, 0.05, 0));
+            heNucleus.add(new THREE.Mesh(new THREE.SphereGeometry(pSize, 12, 8), protonMat).position.set(-0.1, -0.05, 0.05));
+            heNucleus.add(new THREE.Mesh(new THREE.SphereGeometry(nSize, 12, 8), neutronMat).position.set(0.05, 0.1, -0.08));
+            heNucleus.add(new THREE.Mesh(new THREE.SphereGeometry(nSize, 12, 8), neutronMat).position.set(-0.08, -0.1, 0.02));
+
+            const he_s_orbital = new THREE.Mesh(new THREE.SphereGeometry(1.5, 24, 18), orbitalShaderMat(0x88ffff, 0.25));
+            stableAtom.add(he_s_orbital);
+            const he_electrons = [];
+            for(let i=0; i<2; i++) {
+                const electron = new THREE.Mesh(new THREE.SphereGeometry(0.08, 10, 6), electronMat);
+                he_electrons.push(electron); stableAtom.add(electron);
+            }
+
+            const unstableAtom = new THREE.Group();
+            unstableAtom.position.set(4, 2.5, 0);
+            sectionGroup.add(unstableAtom);
+            addSectionTitle(unstableAtom, "Carbone-14 (Radioactif)", new THREE.Vector3(0,3.0,0));
+
+
+            const c14Nucleus = new THREE.Group();
+            unstableAtom.add(c14Nucleus);
+            for(let i=0; i<6; i++) { c14Nucleus.add(new THREE.Mesh(new THREE.SphereGeometry(pSize, 10, 6), protonMat).position.randomDirection().multiplyScalar(0.35)); }
+            for(let i=0; i<8; i++) { const n = new THREE.Mesh(new THREE.SphereGeometry(nSize, 10, 6), neutronMat); n.position.randomDirection().multiplyScalar(0.4); c14Nucleus.add(n); if(i===0) n.name="decayingNeutron"; } 
+
+            const c14_orbitals = new THREE.Group(); 
+            const c14_1s_orbital = new THREE.Mesh(new THREE.SphereGeometry(1.2, 20, 16), orbitalShaderMat(0xffcc88, 0.2));
+            const c14_2sp_orbital = new THREE.Mesh(new THREE.SphereGeometry(2.2, 24, 18), orbitalShaderMat(0xffaa55, 0.15));
+            c14_orbitals.add(c14_1s_orbital, c14_2sp_orbital);
+            unstableAtom.add(c14_orbitals);
+
+            const c14_electrons = [];
+            for(let i=0; i<6; i++) {
+                const electron = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 6), electronMat);
+                c14_electrons.push(electron); unstableAtom.add(electron);
+            }
+            const betaParticleEmitter = new THREE.Group(); 
+            unstableAtom.add(betaParticleEmitter);
+            const emittedBetaParticles = []; 
+            let timeToDecay = 5 + Math.random()*3;
+            let isDecayed = false;
+            let decayAnimationPlaying = false;
+
+            sectionGroup.setAnimation((delta, time, group) => {
+                heNucleus.rotation.y += delta * 0.2;
+                he_electrons[0].position.set(Math.cos(time*3.5) * 1.2, Math.sin(time*3.5+1) * 0.7, Math.sin(time*3.5) * 1.2);
+                he_electrons[1].position.set(Math.cos(time*3.5+Math.PI) * 1.2, Math.sin(time*3.5+Math.PI+1) * 0.7, Math.sin(time*3.5+Math.PI) * 1.2);
+                he_s_orbital.material.uniforms.intensity.value = 0.2 + Math.sin(time*2.5)*0.05;
+
+                c14Nucleus.rotation.x += delta * (0.25 + Math.sin(time*1.1)*0.1);
+                c14Nucleus.rotation.y -= delta * (0.3 + Math.sin(time*0.9)*0.1);
+                c14_electrons.forEach((e,i) => {
+                    const shellRadius = i < 2 ? 1.0 : 1.9; 
+                    const angle = time* (i < 2 ? 3 : 2.5) + i * (Math.PI*2/(i<2?2:4));
+                    const yAmp = i < 2 ? 0.6 : 1.2;
+                    e.position.set(Math.cos(angle) * shellRadius, Math.sin(time*4 + i*Math.PI/3) * yAmp , Math.sin(angle) * shellRadius);
+                });
+                c14_1s_orbital.material.uniforms.intensity.value = 0.15 + Math.sin(time*2.2 + 1)*0.05;
+                c14_2sp_orbital.material.uniforms.intensity.value = 0.12 + Math.sin(time*2.0 + 0.5)*0.04;
+
+
+                if (!isDecayed && !decayAnimationPlaying) timeToDecay -= delta;
+                if (timeToDecay <= 0 && !isDecayed && !decayAnimationPlaying) {
+                    decayAnimationPlaying = true;
+                    const decayingNeutron = c14Nucleus.getObjectByName("decayingNeutron");
+                    if(decayingNeutron){
+                        gsap.to(decayingNeutron.scale, {x:1.3, y:1.3, z:1.3, duration:0.3, yoyo:true, repeat:1, onComplete: ()=>{
+                            decayingNeutron.material = protonMat; 
+                            decayingNeutron.name = "newProton";
+                             gsap.to(c14Nucleus.children.filter(c => c.material.name === "neutronMat" || c.material.name === "protonMat").map(c => c.material.color),
+                                {r:0.6, g:0.6, b:0.9, duration:0.5}); 
+
+                            const beta = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 6), electronMat); 
+                            const antineutrino = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), new THREE.MeshBasicMaterial({color:0xaaaaaa, transparent:true, opacity:0.5}));
+                            
+                            const worldPos = decayingNeutron.getWorldPosition(new THREE.Vector3());
+                            betaParticleEmitter.worldToLocal(worldPos); 
+                            beta.position.copy(worldPos);
+                            antineutrino.position.copy(worldPos);
+                            betaParticleEmitter.add(beta, antineutrino);
+
+                            const betaVelocity = new THREE.Vector3().randomDirection().normalize().multiplyScalar(Math.random()*0.6+1.0); 
+                            const nuVelocity = new THREE.Vector3().subVectors(decayingNeutron.position, beta.position).normalize().multiplyScalar(Math.random()*0.5+0.8);
+                            
+                            beta.userData = { velocity: betaVelocity, lifetime: 1.0 }; 
+                            antineutrino.userData = { velocity: nuVelocity, lifetime: 1.2 };
+                            emittedBetaParticles.push(beta, antineutrino);
+                            isDecayed = true; 
+                        }});
+                    }
+                }
+                 emittedBetaParticles.forEach((p, idx) => {
+                    p.position.addScaledVector(p.userData.velocity, delta * 10); 
+                    p.userData.lifetime -= delta;
+                    if (p.userData.lifetime <= 0) {
+                        p.removeFromParent();
+                        emittedBetaParticles.splice(idx, 1);
+                         if (emittedBetaParticles.length === 0) decayAnimationPlaying = false; 
+                    }
+                });
+            });
+            sectionGroup.addUIControl("Réinitialiser Désintégration C-14", () => {
+                isDecayed = false; decayAnimationPlaying = false; timeToDecay = 0.1; 
+                const newProton = c14Nucleus.getObjectByName("newProton");
+                if(newProton) { newProton.material = neutronMat; newProton.name = "decayingNeutron"; }
+                 c14Nucleus.children.filter(c => c.material === protonMat || c.material === neutronMat).forEach(c=>{
+                    if(c.material === protonMat) gsap.to(c.material.color, {r:protonMat.color.r, g:protonMat.color.g, b:protonMat.color.b, duration:0.2});
+                    else gsap.to(c.material.color, {r:neutronMat.color.r, g:neutronMat.color.g, b:neutronMat.color.b, duration:0.2});
+                 });
+                while(emittedBetaParticles.length > 0) emittedBetaParticles.pop().removeFromParent();
+            });
+
+            const radiopharmaGroup = new THREE.Group();
+            radiopharmaGroup.position.set(0, 2.5, -5);
+            sectionGroup.add(radiopharmaGroup);
+            addSectionTitle(radiopharmaGroup, "Radiopharmaceutique (Concept)", new THREE.Vector3(0, 1.5, 0));
+
+            const molecule = new THREE.Group();
+            const sphereMat = new THREE.MeshStandardMaterial({color: 0x55aa55, roughness:0.6});
+            const stickMat = new THREE.MeshStandardMaterial({color: 0x448844, roughness:0.7});
+            let currentPosMol = new THREE.Vector3();
+            for(let i=0; i<5; i++){
+                const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.2 - i*0.02, 12,8), sphereMat);
+                sphere.position.copy(currentPosMol);
+                molecule.add(sphere);
+                if(i<4){
+                    const nextPos = currentPosMol.clone().add(new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).setLength(0.35));
+                    const stick = createCylinderBetweenPoints(currentPosMol, nextPos, 0.05, stickMat);
+                    molecule.add(stick);
+                    currentPosMol = nextPos;
+                }
+            }
+            radiopharmaGroup.add(molecule);
+            const radioisotope = new THREE.Mesh(new THREE.SphereGeometry(0.15,12,8), new THREE.MeshPhongMaterial({color:0xffaa00, emissive:0xcc5500, shininess:80}));
+            radioisotope.position.set(1,0.5,0);
+            radiopharmaGroup.add(radioisotope);
+            const targetOrgan = new THREE.Mesh(new THREE.SphereGeometry(0.5,16,12), new THREE.MeshStandardMaterial({color:0xaa5555, roughness:0.8, transparent:true, opacity:0.7}));
+            targetOrgan.position.set(-2, -0.5, 0);
+            radiopharmaGroup.add(targetOrgan);
+
+            let pharmaState = 'idle';
+            sectionGroup.addUIControl("Animer Radiopharmaceutique", ()=>{
+                if(pharmaState !== 'idle') return;
+                pharmaState = 'attaching';
+                gsap.to(radioisotope.position, {
+                    x: molecule.children[0].position.x + 0.2, y: molecule.children[0].position.y + 0.2, z: molecule.children[0].position.z,
+                    duration:1, ease: "power1.inOut",
+                    onComplete: () => {
+                        molecule.attach(radioisotope); 
+                        pharmaState = 'targeting';
+                        gsap.to(molecule.position, {
+                            x: targetOrgan.position.x + 0.3, y: targetOrgan.position.y + 0.3, z: targetOrgan.position.z,
+                            duration: 2, ease: "sine.inOut",
+                            onComplete: () => {
+                                pharmaState = 'bound';
+                                const radiationEffect = new THREE.Mesh(new THREE.SphereGeometry(0.1,16,12), orbitalShaderMat(0xffcc00, 0));
+                                const targetWorldPos = radioisotope.getWorldPosition(new THREE.Vector3());
+                                radiationEffect.position.copy(targetWorldPos);
+                                worldGroup.add(radiationEffect); 
+
+
+                                gsap.to(radiationEffect.material.uniforms.intensity, {value:0.8, duration:0.5, yoyo:true, repeat:5, onComplete:()=>{
+                                    radiationEffect.removeFromParent();
+                                    radiopharmaGroup.add(radioisotope); 
+                                    radioisotope.position.set(1,0.5,0);
+                                    molecule.position.set(0,0,0);
+                                    pharmaState = 'idle';
+                                }});
+                            }
+                        });
+                    }
+                });
+            });
+        }
+
+
+        async function initProductionSection(sectionGroup) {
+            const reactorGroup = new THREE.Group();
+            reactorGroup.position.set(-8, 2.5, 0);
+            sectionGroup.add(reactorGroup);
+            addSectionTitle(reactorGroup, "Réacteur Nucléaire (Production Mo-99)", new THREE.Vector3(0, 4.5, 0));
+
+            const vesselMat = new THREE.MeshStandardMaterial({color: 0x778899, metalness: 0.8, roughness: 0.3, side: THREE.DoubleSide, transparent:true, opacity:0.6});
+            const vesselOuter = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 4, 32, 1, true, 0, Math.PI * 1.5), vesselMat);
+            reactorGroup.add(vesselOuter);
+            const vesselInnerWall = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, 3.8, 32,1,true,0, Math.PI*1.5), 
+                                                new THREE.MeshStandardMaterial({color:0x445566, metalness:0.7,roughness:0.4, side:THREE.DoubleSide}));
+            reactorGroup.add(vesselInnerWall);
+
+            const fuelRodMat = new THREE.MeshStandardMaterial({color: 0x333344, emissive: 0x111122, roughness: 0.5});
+            const fuelRodGeo = new THREE.CylinderGeometry(0.1, 0.1, 2.5, 8);
+            for(let i=0; i<8; i++){
+                const angle = (i/8) * Math.PI * 2;
+                const rod = new THREE.Mesh(fuelRodGeo, fuelRodMat);
+                rod.position.set(Math.cos(angle)*0.7, 0, Math.sin(angle)*0.7);
+                rod.name = "fuelRod";
+                reactorGroup.add(rod);
+            }
+            const activationTarget = new THREE.Mesh(new THREE.BoxGeometry(0.3,0.5,0.3), new THREE.MeshStandardMaterial({color:0x00aa00, emissive:0x003300, name:"activationTargetMat"}));
+            activationTarget.position.set(0,0,-0.5);
+            reactorGroup.add(activationTarget);
+
+            let fissionTriggered = false; let activationTriggered = false;
+
+            sectionGroup.addUIControl("Simuler Fission U-235", () => {
+                if(fissionTriggered) return; fissionTriggered = true;
+                const incidentNeutronStartPos = reactorGroup.localToWorld(new THREE.Vector3(0,0,3)); 
+                const incidentNeutron = createParticle(incidentNeutronStartPos, 0xffffff, 0.05);
+                worldGroup.add(incidentNeutron); 
+                const targetRod = reactorGroup.children.find(c=>c.name==="fuelRod");
+                const targetPosWorld = targetRod.getWorldPosition(new THREE.Vector3());
+
+                gsap.to(incidentNeutron.position, {
+                    x: targetPosWorld.x, y: targetPosWorld.y, z: targetPosWorld.z, duration:0.5, ease:"power1.in",
+                    onComplete: () => {
+                        incidentNeutron.removeFromParent();
+                        gsap.to(targetRod.material.emissive, {r:0.5, g:0.5, b:0.1, duration:0.1, yoyo:true, repeat:3}); 
+
+                        for(let i=0; i<2; i++){ 
+                            const color = i === 0 ? 0xffaa00 : 0xcc8800; 
+                            const frag = createParticle(targetPosWorld, color, 0.2 + Math.random()*0.1);
+                            worldGroup.add(frag);
+                            const flyDir = new THREE.Vector3().randomDirection().multiplyScalar(1.5 + Math.random());
+                            gsap.to(frag.position, {x:"+="+flyDir.x, y:"+="+flyDir.y, z:"+="+flyDir.z, duration:0.8, ease:"power1.out", onComplete:()=>frag.removeFromParent()});
+                            if(i===0) addTemporaryText("Mo-99", frag.position, worldGroup, 0xffaa00); 
+                        }
+                        for(let i=0; i<3; i++){ 
+                            const newN = createParticle(targetPosWorld, 0xeeeeff, 0.04);
+                            worldGroup.add(newN);
+                            const flyDirN = new THREE.Vector3().randomDirection().multiplyScalar(2 + Math.random());
+                            gsap.to(newN.position, {x:"+="+flyDirN.x, y:"+="+flyDirN.y, z:"+="+flyDirN.z, duration:0.6, ease:"power1.out", onComplete:()=>newN.removeFromParent()});
+                        }
+                        fissionTriggered = false;
+                    }
+                });
+            });
+            sectionGroup.addUIControl("Simuler Activation Neutronique", () => {
+                 if(activationTriggered) return; activationTriggered = true;
+                 const targetPosWorld = activationTarget.getWorldPosition(new THREE.Vector3());
+                 const originalColor = activationTarget.material.color.clone();
+                 const originalEmissive = activationTarget.material.emissive.clone();
+
+                 for(let i=0; i<5; i++){ 
+                    const incidentNStartPos = new THREE.Vector3(targetPosWorld.x + (Math.random()-0.5)*2, targetPosWorld.y, targetPosWorld.z+2);
+                    const incidentN = createParticle(incidentNStartPos, 0xddddff, 0.04);
+                    worldGroup.add(incidentN);
+                    gsap.to(incidentN.position, {
+                        x: targetPosWorld.x, y: targetPosWorld.y, z: targetPosWorld.z, duration:0.4 + Math.random()*0.2, delay:i*0.05,
+                        onComplete: () => {
+                            incidentN.removeFromParent();
+                            if(i===4){ 
+                                gsap.to(activationTarget.material.color, {r:1, g:0.5, b:0, duration:0.3}); 
+                                gsap.to(activationTarget.material.emissive, {r:0.8, g:0.3, b:0, duration:0.3, onComplete:()=>{
+                                    addTemporaryText("Radioactif!", targetPosWorld, worldGroup, 0xff8800); 
+                                    gsap.to(activationTarget.material.color, {r:originalColor.r, g:originalColor.g, b:originalColor.b, duration:1, delay:1});
+                                    gsap.to(activationTarget.material.emissive, {r:originalEmissive.r, g:originalEmissive.g, b:originalEmissive.b, duration:1, delay:1, onComplete: ()=>activationTriggered=false});
+                                }});
+                            }
+                        }
+                    });
+                 }
+            });
+
+            const cyclotronGroup = new THREE.Group();
+            cyclotronGroup.position.set(0, 2, 0); 
+            sectionGroup.add(cyclotronGroup);
+            addSectionTitle(cyclotronGroup, "Cyclotron (Production F-18)", new THREE.Vector3(0, 3.5, 0));
+
+            const deeMat = new THREE.MeshStandardMaterial({color: 0xb0c4de, metalness: 0.9, roughness: 0.15, side: THREE.DoubleSide, emissive:0x223344, emissiveIntensity:1});
+            const deeShape = new THREE.Shape().absarc(0,0,2.0, -Math.PI/2, Math.PI/2, false).lineTo(0,0); 
+            const deeExtrude = {depth: 0.4, bevelEnabled: true, bevelThickness:0.05, bevelSize:0.05, bevelSegments:2};
+            const d1 = new THREE.Mesh(new THREE.ExtrudeGeometry(deeShape, deeExtrude), deeMat.clone());
+            d1.rotation.z = Math.PI/2; d1.position.x = -0.05; cyclotronGroup.add(d1);
+            const d2 = new THREE.Mesh(new THREE.ExtrudeGeometry(deeShape, deeExtrude), deeMat.clone());
+            d2.rotation.z = -Math.PI/2; d2.position.x = 0.05; cyclotronGroup.add(d2);
+
+            const protonBeamParticle = createParticle(new THREE.Vector3(0,0,0), 0xff00ff, 0.08); 
+            cyclotronGroup.add(protonBeamParticle);
+            protonBeamParticle.userData = {angle:0, radius:0.1, angSpeedBase: 8, radiusIncBase: 0.005, maxRadius:1.8, energy:0, time:0, pathPoints:[], maxPathPoints: 150};
+            const beamPathMaterial = new THREE.LineBasicMaterial({color: 0xff00ff, transparent:true, opacity:0.7, linewidth: 2});
+            const beamPathLine = new THREE.Line(new THREE.BufferGeometry(), beamPathMaterial);
+            cyclotronGroup.add(beamPathLine);
+
+            const cycloTarget = new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.1,16), new THREE.MeshStandardMaterial({color:0x009999, emissive:0x002222}));
+            cycloTarget.position.set(protonBeamParticle.userData.maxRadius + 0.2, 0, 0); 
+            cycloTarget.rotation.z = Math.PI/2;
+            cyclotronGroup.add(cycloTarget);
+
+            cyclotronGroup.userData.animation = (delta, time, group) => {
+                const pData = protonBeamParticle.userData;
+                pData.time += delta;
+                pData.energy = pData.radius / pData.maxRadius; 
+                
+                const angSpeed = pData.angSpeedBase * (1 + pData.energy * 2); 
+                const radiusInc = pData.radiusIncBase * (1 + pData.energy * 50) * delta; 
+
+                pData.angle += angSpeed * delta;
+                if(pData.radius < pData.maxRadius) pData.radius += radiusInc;
+                
+                protonBeamParticle.position.set(Math.cos(pData.angle) * pData.radius, 0, Math.sin(pData.angle) * pData.radius);
+
+                pData.pathPoints.unshift(protonBeamParticle.position.clone());
+                if(pData.pathPoints.length > pData.maxPathPoints) pData.pathPoints.pop();
+                beamPathLine.geometry.setFromPoints(pData.pathPoints);
+
+                d1.material.emissiveIntensity = 0.5 + Math.max(0, Math.sin(time*20)) * 0.8;
+                d2.material.emissiveIntensity = 0.5 + Math.max(0, Math.sin(time*20 + Math.PI)) * 0.8;
+
+                if(pData.radius >= pData.maxRadius && protonBeamParticle.position.distanceTo(cycloTarget.position) < 0.3){
+                    gsap.to(cycloTarget.material.emissive, {r:0, g:0.8, b:0.8, duration:0.1, yoyo:true, repeat:1});
+                    addTemporaryText("F-18!", cycloTarget.getWorldPosition(new THREE.Vector3()), worldGroup, 0x00ffff, 1.0); 
+                    pData.radius = 0.1; pData.angle = 0; pData.time = 0; pData.pathPoints = [];
+                }
+            };
+            sectionGroup.setAnimation(cyclotronGroup.userData.animation);
+
+            const tcGeneratorGroup = new THREE.Group();
+            tcGeneratorGroup.position.set(8, 1.5, 0);
+            sectionGroup.add(tcGeneratorGroup);
+            addSectionTitle(tcGeneratorGroup, "Générateur Tc-99m ('Vache')", new THREE.Vector3(0, 2.0, 0));
+
+            const genHousingMat = new THREE.MeshStandardMaterial({color:0xdae4ee, metalness:0.7, roughness:0.4});
+            const genHousing = new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.6,1.5,32), genHousingMat);
+            tcGeneratorGroup.add(genHousing);
+            const aluminaColMat = new THREE.MeshStandardMaterial({color:0xffffff, transparent:true, opacity:0.3});
+            const aluminaCol = new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.1,0.8,16), aluminaColMat);
+            aluminaCol.position.y = -0.1;
+            genHousing.add(aluminaCol);
+
+            const mo99Points = [];
+            const mo99Mat = new THREE.PointsMaterial({color:0x0055ff, size:0.06, blending: THREE.AdditiveBlending});
+            for(let i=0; i<50; i++){ mo99Points.push(new THREE.Vector3((Math.random()-0.5)*0.15, (Math.random()-0.5)*0.7, (Math.random()-0.5)*0.15)); }
+            const mo99Geo = new THREE.BufferGeometry().setFromPoints(mo99Points);
+            const mo99Cloud = new THREE.Points(mo99Geo, mo99Mat);
+            aluminaCol.add(mo99Cloud);
+
+            const tc99mMat = new THREE.PointsMaterial({color:0xff0055, size:0.07, blending: THREE.AdditiveBlending});
+            const tc99mGeo = new THREE.BufferGeometry();
+            const tc99mCloud = new THREE.Points(tc99mGeo, tc99mMat);
+            aluminaCol.add(tc99mCloud);
+            let tc99mPositions = [];
+
+            const vialMat = new THREE.MeshStandardMaterial({color:0x88ccff, transparent:true, opacity:0.5, roughness:0.1});
+            const vial = new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.15,0.6,16), vialMat);
+            vial.position.set(0.7, -0.5, 0);
+            tcGeneratorGroup.add(vial);
+            let mo99DecayProgress = 0; const decayDuration = 5; 
+            let elutionInProgress = false;
+
+            sectionGroup.addUIControl("Simuler Décroissance Mo-99", () => {
+                if (mo99DecayProgress >= decayDuration || elutionInProgress) return;
+                const initialMoCount = mo99Points.length;
+                gsap.to({progress: mo99DecayProgress}, {
+                    progress: decayDuration, duration: decayDuration - mo99DecayProgress, ease:"none",
+                    onUpdate: function(){
+                        mo99DecayProgress = this.targets()[0].progress;
+                        const decayedCount = Math.floor((mo99DecayProgress / decayDuration) * initialMoCount);
+                        const remainingMo = mo99Points.slice(decayedCount);
+                        mo99Cloud.geometry.setFromPoints(remainingMo);
+
+                        tc99mPositions = mo99Points.slice(0, decayedCount);
+                        tc99mCloud.geometry.setFromPoints(tc99mPositions);
+                    },
+                    onComplete: () => { addTemporaryText("Tc-99m Prêt!", aluminaCol.getWorldPosition(new THREE.Vector3()), worldGroup, 0xff0055, 1.5);} 
+                });
+            });
+            sectionGroup.addUIControl("Éluer Tc-99m", () => {
+                if (elutionInProgress || tc99mPositions.length === 0) return;
+                elutionInProgress = true;
+                const tcParticlesToElute = tc99mCloud.clone(); 
+                tcGeneratorGroup.add(tcParticlesToElute); 
+                tcParticlesToElute.position.copy(aluminaCol.position); 
+                tc99mCloud.geometry.setFromPoints([]); 
+                
+                const targetVialPosLocal = vial.position.clone();
+                targetVialPosLocal.y -= 0.2; 
+
+                gsap.to(tcParticlesToElute.position, {
+                    x:targetVialPosLocal.x, y:targetVialPosLocal.y, z:targetVialPosLocal.z,
+                    duration: 1.5, ease: "power1.in",
+                    onComplete: () => {
+                        tcParticlesToElute.removeFromParent();
+                        addTemporaryText("Tc-99m Collecté!", vial.getWorldPosition(new THREE.Vector3()), worldGroup, 0xff0055, 1.5); 
+                        elutionInProgress = false;
+                        mo99DecayProgress = 0; 
+                        tc99mPositions = [];
+                        mo99Cloud.geometry.setFromPoints(mo99Points); 
+                    }
+                });
+            });
+        }
+
+        async function initDiagnosticAppsSection(sectionGroup) {
+            const petGroup = new THREE.Group();
+            petGroup.position.set(-5, 2, 0);
+            sectionGroup.add(petGroup);
+            addSectionTitle(petGroup, "TEP (Tomographie par Émission de Positons)", new THREE.Vector3(0, 3.5, 0));
+
+            const gantryMat = new THREE.MeshStandardMaterial({color:0xd0e0f0, metalness:0.4, roughness:0.6, transparent:true, opacity:0.7});
+            const gantry = new THREE.Mesh(new THREE.TorusGeometry(2.0, 0.6, 16, 64), gantryMat); 
+            gantry.rotation.y = Math.PI/2;
+            petGroup.add(gantry);
+            const detectorRingGeo = new THREE.TorusGeometry(1.95, 0.1, 8, 96);
+            const detectorRingMat = new THREE.MeshStandardMaterial({color:0x667788, emissive:0x112233, metalness:0.6, roughness:0.3});
+            const detectorRing = new THREE.Mesh(detectorRingGeo, detectorRingMat);
+            detectorRing.rotation.y = Math.PI/2;
+            petGroup.add(detectorRing);
+
+
+            const patientBed = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.4, 4), new THREE.MeshStandardMaterial({color:0xbbccdd, roughness:0.8}));
+            patientBed.position.y = -0.2; petGroup.add(patientBed);
+            const tumorArea = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16,12), new THREE.MeshPhongMaterial({color:0xff6644, emissive:0xcc3311, shininess: 30, transparent:true, opacity:0.8}));
+            tumorArea.position.set(0, 0.1, 0); 
+            patientBed.add(tumorArea);
+
+            const activePetEvents = [];
+
+            sectionGroup.addUIControl("Simuler Événement TEP", () => {
+                if(activePetEvents.length >= 3) return; 
+
+                const event = {
+                    positron: createParticle(tumorArea.getWorldPosition(new THREE.Vector3()), 0x66aaff, 0.05), 
+                    travelPathEnd: new THREE.Vector3().randomDirection().setLength(0.1 + Math.random()*0.1), 
+                    annihilationPoint: new THREE.Vector3(),
+                    photons: []
+                };
+                worldGroup.add(event.positron); 
+                
+                const initialPositronPos = event.positron.position.clone();
+                event.annihilationPoint.copy(initialPositronPos).add(event.travelPathEnd);
+
+                gsap.to(event.positron.position, {
+                    x: event.annihilationPoint.x, y:event.annihilationPoint.y, z:event.annihilationPoint.z,
+                    duration: 0.3 + Math.random()*0.2, ease:"power1.out",
+                    onComplete: () => {
+                        event.positron.removeFromParent();
+                        const flash = createParticle(event.annihilationPoint, 0xffffff, 0.02);
+                        worldGroup.add(flash); 
+                        gsap.to(flash.scale, {x:15,y:15,z:15, duration:0.15, ease:"expo.out", onComplete:()=>flash.removeFromParent()});
+
+                        const emissionDir = new THREE.Vector3().randomDirection();
+                        const photonMat = new THREE.MeshBasicMaterial({color:0xff0000}); 
+                        for(let i=0; i<2; i++){
+                            const photon = new THREE.Mesh(new THREE.SphereGeometry(0.03, 8,6), photonMat);
+                            photon.position.copy(event.annihilationPoint);
+                            photon.userData.velocity = (i===0 ? emissionDir.clone() : emissionDir.clone().negate()).multiplyScalar(10); 
+                            event.photons.push(photon);
+                            worldGroup.add(photon); 
+                            
+                            gsap.to(photon.position, {
+                                x: "+=" + photon.userData.velocity.x * 0.25, 
+                                y: "+=" + photon.userData.velocity.y * 0.25,
+                                z: "+=" + photon.userData.velocity.z * 0.25,
+                                duration: 0.25, ease:"none",
+                                onComplete: () => {
+                                    photon.removeFromParent();
+                                    const detectorFlash = createParticle(new THREE.Vector3(), 0xffaa00, 0.05); 
+                                    const impactPointWorld = photon.position.clone(); 
+                                    detectorRing.worldToLocal(impactPointWorld); 
+                                    detectorFlash.position.copy(impactPointWorld.normalize().multiplyScalar(1.95)); 
+                                    detectorRing.add(detectorFlash); 
+                                    gsap.to(detectorFlash.scale, {x:5,y:5,z:5, duration:0.1, yoyo:true, repeat:1, onComplete:()=>detectorFlash.removeFromParent()});
+                                }
+                            });
+                        }
+                        activePetEvents.splice(activePetEvents.indexOf(event), 1);
+                    }
+                });
+                activePetEvents.push(event);
+            });
+
+            const spectGroup = new THREE.Group();
+            spectGroup.position.set(5, 2, 0);
+            sectionGroup.add(spectGroup);
+            addSectionTitle(spectGroup, "TEMP/SPECT (Scintigraphie)", new THREE.Vector3(0, 3.0, 0));
+            
+            const cameraHeadMat = new THREE.MeshStandardMaterial({color:0x99aabb, metalness:0.6, roughness:0.4});
+            const head1 = new THREE.Mesh(new THREE.BoxGeometry(1.5,0.3,1.5), cameraHeadMat);
+            head1.position.y = 1.8; head1.rotation.x = Math.PI/8;
+            spectGroup.add(head1);
+            const head2 = new THREE.Mesh(new THREE.BoxGeometry(1.5,0.3,1.5), cameraHeadMat);
+            head2.position.y = -1.8; head2.rotation.x = -Math.PI/8;
+            spectGroup.add(head2);
+            const spectPatient = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.5, 8, 16), new THREE.MeshStandardMaterial({color:0xffccaa, transparent:true, opacity:0.6}));
+            spectGroup.add(spectPatient);
+            const tracerSource = new THREE.Mesh(new THREE.SphereGeometry(0.1,12,8), new THREE.MeshPhongMaterial({color:0x00ff88, emissive:0x00aa44}));
+            spectPatient.add(tracerSource);
+            
+            sectionGroup.addUIControl("Émettre Gamma (SPECT)", ()=>{
+                const gamma = createParticle(tracerSource.getWorldPosition(new THREE.Vector3()), 0x00ff00, 0.04); 
+                worldGroup.add(gamma); 
+                const emissionDir = new THREE.Vector3(Math.random()-0.5, Math.random()*0.8+0.2, Math.random()-0.5).normalize(); 
+                const targetHead = emissionDir.y > 0 ? head1 : head2;
+                const targetPos = targetHead.getWorldPosition(new THREE.Vector3()); 
+
+                gsap.to(gamma.position, {
+                    x: targetPos.x + (Math.random()-0.5)*0.5, y: targetPos.y, z: targetPos.z + (Math.random()-0.5)*0.5, 
+                    duration: 0.3 + Math.random()*0.2, ease:"none",
+                    onComplete: ()=>{
+                        gamma.removeFromParent();
+                        gsap.to(targetHead.material.emissive, {r:0.5, g:0.8, b:0.5, duration:0.1, yoyo:true, repeat:1});
+                    }
+                });
+            });
+        }
+
+        async function initTherapeuticAppsSection(sectionGroup){
+            const rivGroup = new THREE.Group();
+            rivGroup.position.set(-4, 1.5, 0);
+            sectionGroup.add(rivGroup);
+            addSectionTitle(rivGroup, "Radiothérapie Interne Vectorisée (RIV)", new THREE.Vector3(0,1.5,0));
+
+            const cellGeo = new THREE.TorusKnotGeometry(0.5, 0.15, 60, 10, 2,3);
+            const cellMat = new THREE.MeshStandardMaterial({color:0x883333, roughness:0.7, emissive:0x220000});
+            const targetCell = new THREE.Mesh(cellGeo, cellMat);
+            rivGroup.add(targetCell);
+
+            const rivPharma = new THREE.Group();
+            const vectorMolecule = new THREE.Mesh(new THREE.IcosahedronGeometry(0.15,0), new THREE.MeshStandardMaterial({color:0x5588ff, roughness:0.5}));
+            rivPharma.add(vectorMolecule);
+            const therapeuticIsotope = new THREE.Mesh(new THREE.SphereGeometry(0.08,8,6), new THREE.MeshPhongMaterial({color:0xff5500, emissive:0xcc3300, shininess:100}));
+            therapeuticIsotope.position.set(0.1,0.1,0);
+            vectorMolecule.add(therapeuticIsotope);
+            rivPharma.position.set(1.5,0.5,0.5);
+            rivGroup.add(rivPharma);
+
+            sectionGroup.addUIControl("Animer RIV", ()=>{
+                gsap.to(rivPharma.position, {
+                    x: targetCell.position.x + 0.3, y: targetCell.position.y + 0.3, z: targetCell.position.z, 
+                    duration: 1.5, ease: "power1.inOut",
+                    onComplete: ()=>{
+                        for(let i=0; i<10; i++){
+                            const particle = createParticle(therapeuticIsotope.getWorldPosition(new THREE.Vector3()), 0xff8844, 0.03);
+                            worldGroup.add(particle); 
+                            const emitDir = new THREE.Vector3().randomDirection().setLength(0.1 + Math.random()*0.2); 
+                            gsap.to(particle.position, {
+                                x:"+="+emitDir.x, y:"+="+emitDir.y, z:"+="+emitDir.z,
+                                duration: 0.2 + Math.random()*0.3, delay:i*0.05,
+                                onComplete: ()=>particle.removeFromParent()
+                            });
+                        }
+                        gsap.to(targetCell.material.emissive, {r:0.5, g:0.1, b:0.1, duration:0.2, yoyo:true, repeat:3, onComplete:()=>{ 
+                            rivPharma.position.set(1.5,0.5,0.5); 
+                        }});
+                    }
+                });
+            });
+
+            const sterilizationGroup = new THREE.Group();
+            sterilizationGroup.position.set(4, 1.5, 0);
+            sectionGroup.add(sterilizationGroup);
+            addSectionTitle(sterilizationGroup, "Stérilisation (Cobalt-60)", new THREE.Vector3(0,2.0,0));
+
+            const co60Source = new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.3,0.8,32), new THREE.MeshStandardMaterial({color:0x444466, metalness:0.9, roughness:0.2, emissive:0x111133}));
+            co60Source.position.y = 1.2;
+            sterilizationGroup.add(co60Source);
+            const packageGeo = new THREE.BoxGeometry(1,0.8,0.6);
+            const packageMat = new THREE.MeshStandardMaterial({color:0xeeeeff, roughness:0.9, transparent:true, opacity:0.8});
+            const medicalPackage = new THREE.Mesh(packageGeo, packageMat);
+            sterilizationGroup.add(medicalPackage);
+
+            sectionGroup.addUIControl("Irradier (Stérilisation)", ()=>{
+                const sourcePos = co60Source.getWorldPosition(new THREE.Vector3());
+                const packageCenter = medicalPackage.getWorldPosition(new THREE.Vector3());
+                for(let i=0; i<20; i++){ 
+                    const gammaRay = new THREE.Line(
+                        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0,0,1)]), 
+                        new THREE.LineBasicMaterial({color:0x00ffff, transparent:true, opacity:0.7})
+                    );
+                    worldGroup.add(gammaRay); 
+                    const startPoint = sourcePos.clone().add(new THREE.Vector3(0,(Math.random()-0.5)*0.5,0)); 
+                    const endPointInPackage = packageCenter.clone().add(new THREE.Vector3((Math.random()-0.5)*0.8, (Math.random()-0.5)*0.6, (Math.random()-0.5)*0.4));
+                    const direction = new THREE.Vector3().subVectors(endPointInPackage, startPoint).normalize();
+                    const farEndPoint = startPoint.clone().addScaledVector(direction, 5); 
+
+                    const linePoints = [startPoint.x, startPoint.y, startPoint.z, startPoint.x, startPoint.y, startPoint.z];
+                    gammaRay.geometry.setAttribute('position', new THREE.Float32BufferAttribute(linePoints, 3));
+                    
+                    gsap.to(gammaRay.geometry.attributes.position.array, { 
+                        3: farEndPoint.x, 4: farEndPoint.y, 5: farEndPoint.z, 
+                        duration: 0.3 + Math.random()*0.2, delay: i*0.02,
+                        onUpdate: ()=> gammaRay.geometry.attributes.position.needsUpdate = true,
+                        onComplete: ()=> gammaRay.removeFromParent()
+                    });
+                }
+                gsap.to(medicalPackage.material, {opacity:0.5, duration:0.1, yoyo:true, repeat:3}); 
+            });
+        }
+        
+        async function initImpactsSection(sectionGroup){
+            addSectionTitle(sectionGroup, "Impacts Positifs & Gestion Déchets", new THREE.Vector3(0,0.5,0));
+            const benefitsPlane = new THREE.Mesh(new THREE.PlaneGeometry(3,2), new THREE.MeshStandardMaterial({color:0x22aa88, side:THREE.DoubleSide}));
+            benefitsPlane.position.set(-2,0,0);
+            // Text position is relative to the parent (benefitsPlane)
+            addFloatingText("Diagnostics Précoces", new THREE.Vector3(0,0.8,0.1), benefitsPlane, 0.2, 0xffffff); 
+            addFloatingText("Traitements Ciblés", new THREE.Vector3(0,0.2,0.1), benefitsPlane, 0.2, 0xffffff); 
+            sectionGroup.add(benefitsPlane);
+
+            const decayStorage = new THREE.Group();
+            decayStorage.position.set(2,0,0);
+            const storageContainer = new THREE.Mesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({color:0xaaaa00, emissive:0x333300}));
+            decayStorage.add(storageContainer);
+            // Text position is relative to parent (storageContainer)
+            addFloatingText("Stockage Décroissance", new THREE.Vector3(0,0.8,0.1), storageContainer, 0.15, 0xffff00); 
+            sectionGroup.add(decayStorage);
+        }
+        async function initBilanSection(sectionGroup){
+            addSectionTitle(sectionGroup, "Bilan: Bénéfices vs Risques", new THREE.Vector3(0,0.5,0));
+            const scaleBase = new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,1.5,16), new THREE.MeshStandardMaterial({color:0x777777}));
+            scaleBase.position.y = -0.75;
+            const scaleArm = new THREE.Mesh(new THREE.BoxGeometry(3,0.1,0.1), new THREE.MeshStandardMaterial({color:0x888888}));
+            const scalePanGeo = new THREE.CylinderGeometry(0.5,0.4,0.1,16);
+            const panMat = new THREE.MeshStandardMaterial({color:0x999999});
+            const panLeft = new THREE.Mesh(scalePanGeo, panMat); panLeft.position.set(-1.3,-0.3,0); scaleArm.add(panLeft);
+            const panRight = new THREE.Mesh(scalePanGeo, panMat); panRight.position.set(1.3,-0.3,0); scaleArm.add(panRight);
+            // Text position is relative to parent (panLeft/panRight)
+            addFloatingText("Bénéfices", new THREE.Vector3(0,0.3,0.1), panLeft, 0.15, 0x00ff00); 
+            addFloatingText("Risques/Défis", new THREE.Vector3(0,0.3,0.1), panRight, 0.15, 0xff8800); 
+            sectionGroup.add(scaleBase, scaleArm);
+            gsap.to(scaleArm.rotation, {z: THREE.MathUtils.degToRad(-5 + Math.random()*10), duration:2, yoyo:true, repeat:-1, ease:"sine.inOut"});
+        }
+
+        function addSectionTitle(parent, text, position) {
+            const sprite = createTextSprite(text, {fontsize:28, fontface:"Roboto", textColor:{r:200,g:220,b:255,a:1}});
+            sprite.position.copy(position); // Position relative to parent
+            sprite.scale.multiplyScalar(1.2); // Adjusted scale
+            parent.add(sprite);
+        }
+        
+        // 'position' is now intended as local offset from the parent's origin
+        function addFloatingText(text, localPosition, parent, size = 0.1, color = 0xffffff) {
+            const sprite = createTextSprite(text, {fontsize: Math.floor(size*180), textColor:{r: (color>>16)&0xff, g:(color>>8)&0xff, b:color&0xff, a:1}});
+            sprite.position.copy(localPosition); 
+            parent.add(sprite);
+            return sprite;
+        }
+
+         function addTemporaryText(text, worldPosition, parentGroup, color = 0xffffff, duration = 2.0, size = 0.3) {
+            const sprite = createTextSprite(text, {fontsize: Math.floor(size*180), textColor:{r: (color>>16)&0xff, g:(color>>8)&0xff, b:color&0xff, a:1}});
+            
+            const localPosition = parentGroup.worldToLocal(worldPosition.clone());
+            sprite.position.copy(localPosition);
+            parentGroup.add(sprite);
+
+            sprite.material.opacity = 0;
+            gsap.to(sprite.material, {opacity: 1, duration: 0.3, yoyo: true, repeat: 1, repeatDelay: duration - 0.6, 
+                onComplete: () => parentGroup.remove(sprite)
+            });
+            gsap.to(sprite.position, {y: sprite.position.y + 0.5, duration: duration, ease:"power1.out"}); 
+        }
+
+
+        function createParticle(worldPosition, color, size){ 
+            const particle = new THREE.Mesh(
+                new THREE.SphereGeometry(size, 8, 6),
+                new THREE.MeshBasicMaterial({color: color, transparent:true, opacity:0.9})
+            );
+            particle.position.copy(worldPosition); 
+            return particle;
+        }
+
+        function createCylinderBetweenPoints(startPoint, endPoint, radius, material) { // Points are local to their parent
+            const direction = new THREE.Vector3().subVectors(endPoint, startPoint);
+            const orientation = new THREE.Matrix4();
+            orientation.lookAt(startPoint, endPoint, new THREE.Object3D().up); 
+            orientation.multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2)); 
+            const edgeGeometry = new THREE.CylinderGeometry(radius, radius, direction.length(), 8, 1);
+            const edge = new THREE.Mesh(edgeGeometry, material);
+            edge.applyMatrix4(orientation);
+            edge.position.copy(new THREE.Vector3().addVectors(startPoint, direction.multiplyScalar(0.5)));
+            return edge;
+        }
+
+
+        function createTextSprite(message, parameters = {}) {
+            const fontface = parameters.fontface || 'Arial';
+            const fontsize = parameters.fontsize || 24; 
+            const borderThickness = parameters.borderThickness || 0; 
+            const borderColor = parameters.borderColor || { r:0, g:0, b:0, a:0.0 };
+            const backgroundColor = parameters.backgroundColor || { r:255, g:255, b:255, a:0.0 }; 
+            const textColor = parameters.textColor || { r:230, g:230, b:255, a:1.0 };
+            const fontWeight = parameters.fontWeight || 'Bold';
+
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            
+            context.font = `${fontWeight} ${fontsize}px ${fontface}`;
+            const metrics = context.measureText(message);
+            const textWidth = metrics.width;
+
+            canvas.width = textWidth + borderThickness * 2 + fontsize * 0.2; 
+            canvas.height = fontsize * 1.4 + borderThickness * 2; 
+            
+            context.font = `${fontWeight} ${fontsize}px ${fontface}`;
+            context.textAlign = "center";
+            context.textBaseline = "middle";
+
+            context.fillStyle = `rgba(${backgroundColor.r},${backgroundColor.g},${backgroundColor.b},${backgroundColor.a})`;
+            context.strokeStyle = `rgba(${borderColor.r},${borderColor.g},${borderColor.b},${borderColor.a})`;
+            context.lineWidth = borderThickness;
+
+            if (backgroundColor.a > 0) context.fillRect(0, 0, canvas.width, canvas.height);
+            if (borderThickness > 0 && borderColor.a > 0) context.strokeRect(0, 0, canvas.width, canvas.height);
+
+            context.fillStyle = `rgba(${textColor.r}, ${textColor.g}, ${textColor.b}, ${textColor.a})`;
+            context.fillText(message, canvas.width / 2, canvas.height / 2);
+
+            const texture = new THREE.Texture(canvas);
+            texture.needsUpdate = true;
+            const spriteMaterial = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent:true, fog: false });
+            const sprite = new THREE.Sprite(spriteMaterial);
+            sprite.scale.set((canvas.width/fontsize)*0.2, (canvas.height/fontsize)*0.2, 1.0); 
+            return sprite;
+        }
+
+        function updateActiveSectionDisplay(){
+            let currentCameraWorldPosition = new THREE.Vector3();
+
+            if (renderer.xr.isPresenting) {
+                const xrCameraArray = renderer.xr.getCamera(camera); // This returns an array in some three.js versions, use first
+                const actualXrCamera = Array.isArray(xrCameraArray) ? xrCameraArray[0] : xrCameraArray;
+                actualXrCamera.getWorldPosition(currentCameraWorldPosition); 
+            } else {
+                camera.getWorldPosition(currentCameraWorldPosition);
+            }
+            
+            let minDist = Infinity;
+            let focusedSection = null;
+
+            worldGroup.children.forEach(child => {
+                if(child instanceof VisualSection){
+                    const sectionWorldPosition = child.getWorldPosition(new THREE.Vector3());
+                    const dist = currentCameraWorldPosition.distanceTo(sectionWorldPosition);
+                    if(dist < minDist){
+                        minDist = dist;
+                        focusedSection = child;
+                    }
+                }
+            });
+            
+            let currentFocusCandidate = null;
+            if(focusedSection && minDist < SECTION_FOCUS_DISTANCE){
+                currentFocusCandidate = focusedSection;
+            }
+
+            if(activeSectionObject !== currentFocusCandidate){
+                if(activeSectionObject && activeSectionObject.onFocusLoss) {
+                    activeSectionObject.onFocusLoss();
+                }
+                activeSectionObject = currentFocusCandidate;
+                if(activeSectionObject && activeSectionObject.onFocusGain) {
+                    activeSectionObject.onFocusGain();
+                }
+                activeSectionName = activeSectionObject ? activeSectionObject.name : "N/A (Vue d'ensemble)";
+                if (pcModeActive) {
+                    currentSectionPanel.innerHTML = `<h3>Section Actuelle</h3> ${activeSectionName}`;
+                }
+            }
+        }
+
+        function animate(timestamp, frame) { 
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            if (pcModeActive) {
+                controls.update(); 
+            }
+
+            worldGroup.children.forEach(child => { 
+                if (child instanceof VisualSection) {
+                    child.update(delta, time);
+                }
+            });
+
+            updateActiveSectionDisplay(); 
+            composer.render(); 
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        init().catch(err => {
+            console.error("Initialization Failed:", err);
+            mainInfoPanel.innerHTML = `<h3>ERREUR D'INITIALISATION</h3><p style="color:red;">${err.message}</p><p>Veuillez vérifier la console (F12) pour les détails.</p>`;
+        });
+
+    </script>
+</body>
+</html>
